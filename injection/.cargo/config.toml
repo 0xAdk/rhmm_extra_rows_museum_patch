@@ -1,0 +1,12 @@
+[build]
+target = ".cargo/arm-none-eabihf.json"
+rustflags = [
+	"-C", "link-arg=--script=.cargo/linker.ld",
+	"-C", "relocation-model=pic",
+]
+
+[target.arm-none-eabihf]
+linker = "arm-none-eabi-ld"
+
+[unstable]
+build-std = ["core"]

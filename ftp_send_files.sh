@@ -16,8 +16,12 @@ fi
 
 ftp -inv "$FTP_HOST" "$FTP_PORT" <<-EOF
 	user $FTP_USER
-	lcd output
 	cd /luma/titles/000400000018A400
+
+	lcd output
 	put code.ips
+	put exheader.ips
+	put injection.bin
+
 	bye
 EOF

@@ -1,5 +1,2 @@
-# for input/code.bin, output/code.bin
-*.bin
-
-# for output/code.ips
-*.ips
+output/
+input/
