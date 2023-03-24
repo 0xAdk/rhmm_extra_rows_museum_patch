@@ -14,11 +14,17 @@ if [ -z "$FTP_HOST" ]; then
 	exit 1
 fi
 
-ftp -inv "$FTP_HOST" "$FTP_PORT" <<-EOF
+cd "${OUT_DIR:-output}" || exit
+
+ftp -in <<-EOF
+	open $FTP_HOST $FTP_PORT
 	user $FTP_USER
+
+	mkdir /luma
+	mkdir /luma/titles
+	mkdir /luma/titles/000400000018A400
 	cd /luma/titles/000400000018A400
 
-	lcd output
 	put code.ips
 	put exheader.ips
 	put injection.bin
