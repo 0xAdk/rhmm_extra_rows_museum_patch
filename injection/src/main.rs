@@ -21,16 +21,17 @@ global_asm!(
 	.global _start
 	.section .text._start
 	_start:
-		b_if_from 0x2424A8 {no_row_found_inject}
+		b_if_from 0x2423DC {get_next_row}
 		mov pc, lr
 	
 	.pool
 	"#,
-	no_row_found_inject = sym no_row_found_inject,
+	get_next_row = sym get_next_row,
 );
 
 const MUSEUM_ROW_COUNT: usize = 29;
 
+#[repr(u8)]
 enum SearchDirection {
 	Up = 0,
 	Down = 1,
@@ -48,24 +49,43 @@ impl TryFrom<u32> for SearchDirection {
 	}
 }
 
-fn no_row_found_inject() {
-	// get the direction we we're searching in when no row was found
-	let dir: SearchDirection = unsafe {
-		let reg: u32;
-		asm!("mov {}, r9", out(reg) reg);
-		reg.try_into().unwrap()
+extern "C" fn get_next_row(_this: *const (), mut current_row: usize, dir: SearchDirection) -> i32 {
+	// this shouldn't happen right?
+	if current_row > MUSEUM_ROW_COUNT {
+		return -1;
+	}
+
+	let new_row_index = loop {
+		match dir {
+			SearchDirection::Up => current_row += 1,
+			SearchDirection::Down => current_row = current_row.wrapping_sub(1),
+		}
+
+		if current_row >= MUSEUM_ROW_COUNT {
+			break None;
+		}
+
+		let row = unsafe { &(*MUSEUM_ROWS)[current_row] };
+		if row_is_visible(row) {
+			break Some(current_row);
+		}
 	};
 
-	let new_row_index = match dir {
-		SearchDirection::Up => 0, // first row index
+	let current_save_slot = unsafe { (**SAVE_MANAGER).current_save_slot };
 
-		SearchDirection::Down => (0..MUSEUM_ROW_COUNT)
-			.rev()
-			.find(|&index| row_is_visible(index))
-			.unwrap_or(0),
-	};
-
-	unsafe { asm!("mov r0, {}", in(reg) new_row_index, out("r0") _) };
+	match new_row_index {
+		Some(row) => row as i32,
+		None => match dir {
+			SearchDirection::Up => 0,
+			SearchDirection::Down => (0..MUSEUM_ROW_COUNT)
+				.rev()
+				.find(|&index| {
+					let row = unsafe { &(*MUSEUM_ROWS)[index] };
+					row_is_visible(row)
+				})
+				.unwrap_or(0) as i32,
+		},
+	}
 }
 
 #[repr(C)]
@@ -82,10 +102,7 @@ const MUSEUM_ROWS: *const [MuseumRow; MUSEUM_ROW_COUNT] = 0x4c8ea8 as _;
 
 macro_rules! const_fn_ptr_at_addr {
 	(const $name:ident at $addr:literal: $fptr_type:ty) => {
-		// I don't know how to remove the ptr indirection
-		// rust isn't happy with |const _:        $fptr_type = transmute( $addr)|
-		// it only accepts       |const _: *const $fptr_type = transmute(&$addr)|
-		const $name: *const $fptr_type = unsafe { core::mem::transmute(&$addr) };
+		const $name: *const $fptr_type = &$addr as *const _ as _;
 	};
 }
 
@@ -95,7 +112,7 @@ fn get_game_id(game_index: u16) -> u8 {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 enum GameRank {
 	Unknown = 0, // game is hidden in the campaign or not bought
 
@@ -127,19 +144,30 @@ impl TryFrom<u8> for GameRank {
 	}
 }
 
-type SaveManager = ();
+#[repr(C)]
+struct SaveSlot {
+	fill_0: [u8; 0x74],
+	game_ranks: [GameRank; 104],
+	fill_1: [u8; 0x10A8],
+	coin_count: u16,
+	flow_ball_count: u16,
+	fill_2: [u8; 0x4C0],
+}
+
+#[repr(C)]
+struct SaveManager {
+	fill_0: [u8; 0x1C3F],
+	save_slots: [SaveSlot; 4],
+	current_save_slot: usize,
+	fill_1: [u8; 0x4],
+}
+
 const SAVE_MANAGER: *const *const SaveManager = 0x54d350 as _;
 
 fn get_game_rank(game_id: u8) -> GameRank {
-	const_fn_ptr_at_addr! {
-		const FN_PTR at 0x2619c4: extern "C" fn(
-			save_manager: *const SaveManager,
-			game_id: u8,
-			save_slot: i32
-		) -> GameRank
-	};
-
-	unsafe { (*FN_PTR)(*SAVE_MANAGER, game_id, -1) }
+	let save_manager = unsafe { &**SAVE_MANAGER };
+	let current_save_slot = &save_manager.save_slots[save_manager.current_save_slot];
+	current_save_slot.game_ranks[game_id as usize]
 }
 
 fn find_row_with_index(game_index: u16) -> u8 {
@@ -165,11 +193,9 @@ fn get_gate_state(high_index: u32, low_index: u32) -> u8 {
 	unsafe { (*FN_PTR)(*SAVE_MANAGER, high_index, low_index, -1) }
 }
 
-fn row_is_visible(row_index: usize) -> bool {
-	let row = unsafe { &(*MUSEUM_ROWS)[row_index] };
-
-	// I don't think this is possible
-	// but the decompiled code does a similar check, so might as well
+fn row_is_visible(row: &MuseumRow) -> bool {
+	// I don't think this is possible but the decompiled code does a similar
+	// check, so might as well
 	if row.column_count == 0 {
 		return false;
 	}

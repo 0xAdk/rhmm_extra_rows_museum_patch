@@ -15,9 +15,11 @@ new_code_main_ptr equ bss_end
 
 .open "input/code.bin", "output/code.bin", 0x100000
 
-; right before MuseumScene::get_next_row returns -1 for "row not found"
-.org 0x2424A8
+; thunk MuseumScene::get_next_row(...)
+.org 0x2423D8
+	push {r4-r12, lr}
 	bl patch_main_thunk
+	pop {r4-r12, pc}
 
 ; right after the file system is initialized
 @patch_loader_injection_loc equ 0x100D04
