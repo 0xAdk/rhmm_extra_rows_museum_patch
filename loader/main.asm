@@ -102,10 +102,9 @@ injection_filepath_size equ . - injection_filepath
 	add r1, sp, 0x10 ; r1 = pointer to file size
 	bl @GET_FILE_SIZE
 
-	; allocate space for file copy
 	ldr r0, [sp, 0x10]
-	bl @MALLOC
-	bl mark_memory_as_rwx
+	bl @MALLOC            ; allocate space for file copy
+	bl mark_memory_as_rwx ; mark allocated memory as RWX
 	mov r7, r0 ; keep the adress of the allocated memory to be returned
 
 	str r0, [sp]       ; output buffer
@@ -149,8 +148,6 @@ injection_filepath_size equ . - injection_filepath
 	;     type[r4],
 	;     perm[r5]
 	; )
-	; pretty sure this marks part (or all?) of bss as RWX.
-	; I don't know how to limit it to just the part after bss I care about
 	;
 	;   r0: from OpenProcess ; process handle
 	mov r2, 0                ; addr2 = NULL
