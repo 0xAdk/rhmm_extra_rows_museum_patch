@@ -22,7 +22,7 @@ new_code_main_ptr equ bss_end
 	pop {r4-r12, pc}
 
 ; right after the file system is initialized
-@patch_loader_injection_loc equ 0x100D04
+@patch_loader_injection_loc equ 0x100010
 .org @patch_loader_injection_loc
 	b load_patch_detour
 
@@ -35,7 +35,7 @@ new_code_main_ptr equ bss_end
 .func load_patch_detour
 	bl load_patch
 
-	mov r1, 0
+	blx 0x10097C
 	b @patch_loader_injection_loc + 4
 .endfunc
 
@@ -63,14 +63,13 @@ injection_filepath_size equ . - injection_filepath
 	pop {r0, r1, pc}
 .endfunc
 
-@FILE_SYSTEM_SESSION equ 0x54DD18
-@SD_ROOT_STR         equ 0x51198E
-@MOUNT_SD_CARD       equ 0x2BC660
-@OPEN_FILE           equ 0x279E60
-@GET_FILE_SIZE       equ 0x2BC628
-@MALLOC              equ 0x28C108
-@READ_FILE           equ 0x2BC544
-@CLOSE_FILE          equ 0x2BC59C
+@FILE_SYSTEM_SESSION  equ 0x54DD18
+@INITIALIZE_FS_SYSTEM equ 0x28b3bc
+@OPEN_FILE_DIRECTLY   equ 0x279E60
+@GET_FILE_SIZE        equ 0x2BC628
+@MALLOC               equ 0x28C108
+@READ_FILE            equ 0x2BC544
+@CLOSE_FILE           equ 0x2BC59C
 .func load_file_rwx
 	push {r1-r7, lr}
 	sub sp, 0x24
@@ -78,9 +77,8 @@ injection_filepath_size equ . - injection_filepath
 	mov r6, r0 ; file path
 	mov r7, r1 ; file path size
 
-	; mount sd card
-	ldr r0, =@SD_ROOT_STR
-	bl @MOUNT_SD_CARD
+	; sets @FILE_SYSTEM_SESSION
+	bl @INITIALIZE_FS_SYSTEM
 
 	; open file
 	ldr r0, =@FILE_SYSTEM_SESSION
@@ -97,7 +95,7 @@ injection_filepath_size equ . - injection_filepath
 	str r7, [sp, 0x14] ; filepath size
 	str r4, [sp, 0x18] ; file open flags      = READ
 	str r2, [sp, 0x1C] ; attributes           = 0
-	bl @OPEN_FILE
+	bl @OPEN_FILE_DIRECTLY
 
 	; get filesize
 	add r0, sp, 0x20 ; r0 = pointer to file handle
