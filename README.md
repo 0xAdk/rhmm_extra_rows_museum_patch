@@ -8,7 +8,7 @@ This was made as an exercise in generating ips patches for Luma3DS's game patchi
 patching code.bin:
 - [armips](https://github.com/Kingcom/armips)
 - [flips](https://github.com/Alcaro/Flips)
-- rhmm's code.bin and exheader.bin in `input`
+- rhmm's code.bin in `input`
 
 building injection.bin:
 - the [arm gnu toolchain](https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain)
@@ -24,7 +24,6 @@ make
 
 This will create:
 - output/code.ips
-- output/exheader.ips
 - output/injection.bin
 
 to then install, copy these files into `/luma/titles/000400000018A400` on your
