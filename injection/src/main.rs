@@ -254,7 +254,7 @@ struct MuseumRow {
 	low_index: u32,
 }
 
-const MUSEUM_ROWS: *const [MuseumRow; MUSEUM_ROW_COUNT] = 0x4c8ea8 as _;
+const MUSEUM_ROWS: *const [MuseumRow; MUSEUM_ROW_COUNT] = 0x4C8EA8 as _;
 
 macro_rules! const_fn_ptr_at_addr {
 	(const $name:ident at $addr:literal: $fptr_type:ty) => {
@@ -263,7 +263,7 @@ macro_rules! const_fn_ptr_at_addr {
 }
 
 fn get_game_id(game_index: u16) -> u8 {
-	const_fn_ptr_at_addr!(const FN_PTR at 0x261a10: extern "C" fn(u16) -> u8);
+	const_fn_ptr_at_addr!(const FN_PTR at 0x261A10: extern "C" fn(u16) -> u8);
 	unsafe { (*FN_PTR)(game_index) }
 }
 
