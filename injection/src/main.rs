@@ -1,33 +1,189 @@
 #![no_std]
 #![no_main]
 
-use core::{
-	arch::{asm, global_asm},
-	ffi::c_char,
-};
+use core::{arch::asm, ffi::c_char};
 
-global_asm!(
-	r#"
-	// redirects to `dest` function if _start was called from `addr`
-	// the stack pointer is stored in r12 so the function can access it
-	// without having to worry about what rust is doing with the stack
-	.macro b_if_from addr, dest
-		ldr r12, =(\addr + 4)
-		cmp lr, r12
-		mov r12, sp
-		beq \dest
-	.endm
+#[export_name = "_start"]
+#[link_section = ".text._start"]
+fn setup_hooks() {
+	thunk_to_rust(0x2423D8 as _, get_next_row as _);
+}
 
-	.global _start
-	.section .text._start
-	_start:
-		b_if_from 0x2423DC {get_next_row}
-		mov pc, lr
-	
-	.pool
-	"#,
-	get_next_row = sym get_next_row,
-);
+// takes a address to a function in code.bin and replaces it with a thunk
+// function that calls `rust_function` instead
+fn thunk_to_rust(func_addr: *const (), rust_function: *const ()) {
+	// overwrites the first 3 bytes of func_addr with:
+	//   ldr r12, 0f
+	//   bx  r12
+	//   0: .word {rust_function_ptr}
+	let thunk_to_rust_func = &[0xE5_9F_C0_00, 0xE1_2F_FF_1C, rust_function as _];
+
+	unsafe { patch_text(func_addr as _, thunk_to_rust_func).unwrap() }
+}
+
+unsafe fn patch_text(addr: *mut u32, new_code: &[u32]) -> Result<(), SvcResult> {
+	let text_start = 0x100000 as *const ();
+	let text_size = 0x29A000;
+
+	let process_handle_wrapper = open_current_process_handle().unwrap();
+
+	process_memory_set_permissions(
+		process_handle_wrapper.handle,
+		text_start,
+		text_size,
+		MemoryPermission::RW,
+	)
+	.unwrap();
+
+	addr.copy_from_nonoverlapping(new_code.as_ptr(), new_code.len());
+
+	process_memory_set_permissions(
+		process_handle_wrapper.handle,
+		text_start,
+		text_size,
+		MemoryPermission::RX,
+	)
+	.unwrap();
+
+	Ok(())
+}
+
+type SvcResult = u32;
+
+#[allow(dead_code)]
+struct MemoryInfo {
+	base_addr: *const (),
+	size: usize,
+	perm: MemoryPermission,
+}
+
+type Handle = u32;
+struct HandleWrapper {
+	handle: Handle,
+}
+
+impl Drop for HandleWrapper {
+	fn drop(&mut self) {
+		let _ = close_handle(self.handle);
+	}
+}
+
+#[repr(u32)]
+#[allow(dead_code, clippy::upper_case_acronyms)]
+enum MemoryPermission {
+	None = 0,
+	R = 1,
+	W = 2,
+	RW = 3,
+	X = 4,
+	RX = 5,
+	WX = 6,
+	RWX = 7,
+	DontCare = 0x10000000,
+}
+
+fn process_memory_set_permissions(
+	process_handle: Handle,
+	addr: *const (),
+	size: usize,
+	perm: MemoryPermission,
+) -> Result<(), SvcResult> {
+	let mut result: SvcResult;
+	unsafe {
+		asm!(
+			"
+			swi 0x70
+			",
+			in("r0") process_handle,
+			in("r1") addr,
+			in("r2") core::ptr::null::<()>(),
+			in("r3") size,
+			in("r4") MemoryOperation::Protect as u32,
+			in("r5") perm as u32,
+
+			lateout("r0") result,
+
+			// clobber
+			lateout("r1") _,
+			lateout("r2") _,
+			lateout("r3") _,
+			lateout("r12") _,
+		)
+	}
+
+	if result == 0 {
+		Ok(())
+	} else {
+		Err(result)
+	}
+}
+
+#[allow(dead_code)]
+enum MemoryOperation {
+	Free = 1,
+	Reserve = 2,
+	Commit = 3,
+	Map = 4,
+	Unmap = 5,
+	Protect = 6,
+	RegionApp = 0x100,
+	RegionSystem = 0x200,
+	RegionBase = 0x300,
+	Linear = 0x10000,
+}
+
+const CURRENT_PROCESS_PSEUDO_HANDLE: Handle = 0xFFFF8001;
+fn open_current_process_handle() -> Result<HandleWrapper, SvcResult> {
+	let mut result: SvcResult;
+	let mut process_handle: Handle;
+
+	unsafe {
+		asm!(
+			r#"
+			swi 0x35 // get_process_id(handle[r1]) -> process_id[r1]
+			swi 0x33 // open_process(process_id[r1]) -> handle[r1]
+			"#,
+			out("r0") result,
+			inlateout("r1") CURRENT_PROCESS_PSEUDO_HANDLE => process_handle,
+
+			// clobber
+			lateout("r2") _,
+			lateout("r3") _,
+			lateout("r12") _,
+		)
+	}
+
+	if result == 0 {
+		Ok(HandleWrapper {
+			handle: process_handle,
+		})
+	} else {
+		Err(result)
+	}
+}
+
+fn close_handle(handle: Handle) -> Result<(), SvcResult> {
+	let mut result: SvcResult;
+
+	unsafe {
+		asm!(
+			"swi 0x23",
+			inlateout("r0") handle => result,
+
+			// clobber
+			lateout("r1") _,
+			lateout("r2") _,
+			lateout("r3") _,
+			lateout("r12") _,
+		)
+	}
+
+	if result == 0 {
+		Ok(())
+	} else {
+		Err(result)
+	}
+}
 
 const MUSEUM_ROW_COUNT: usize = 29;
 

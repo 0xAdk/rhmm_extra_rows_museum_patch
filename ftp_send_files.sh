@@ -26,7 +26,6 @@ ftp -in <<-EOF
 	cd /luma/titles/000400000018A400
 
 	put code.ips
-	put exheader.ips
 	put injection.bin
 
 	bye

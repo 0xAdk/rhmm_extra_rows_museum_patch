@@ -1,27 +1,7 @@
 .arm.little
 
-bss_end           equ 0x5dc2f0
-new_code_main_ptr equ bss_end
-
-; add 4 bytes to the end of bss in order to store `new_code_main_ptr`
-.open "input/exheader.bin", "output/exheader.bin", 0x0
-@bss_size     equ 0x8D27C
-@new_bss_size equ @bss_size + 4
-
-@exheader_bss_size_offset equ 0x3C
-.org @exheader_bss_size_offset :: .d32 @new_bss_size
-.close
-
-
 .open "input/code.bin", "output/code.bin", 0x100000
 
-; thunk MuseumScene::get_next_row(...)
-.org 0x2423D8
-	push {r4-r12, lr}
-	bl patch_main_thunk
-	pop {r4-r12, pc}
-
-; right after the file system is initialized
 @patch_loader_injection_loc equ 0x100010
 .org @patch_loader_injection_loc
 	b load_patch_detour
@@ -33,16 +13,12 @@ new_code_main_ptr equ bss_end
 .area @free_space_end - .
 
 .func load_patch_detour
+	push {r0-r12}
 	bl load_patch
+	pop {r0-r12}
 
 	blx 0x10097C
 	b @patch_loader_injection_loc + 4
-.endfunc
-
-.func patch_main_thunk
-	; the address to the new_codes's main function is stored after the end of the bss
-	ldr r12, =new_code_main_ptr
-	ldr pc, [r12]
 .endfunc
 
 injection_filepath:     .asciiz "/luma/titles/000400000018A400/injection.bin"
@@ -50,26 +26,29 @@ injection_filepath_size equ . - injection_filepath
 .align
 
 .func load_patch
-	push {r0, r1, lr}
+	push {lr}
 
 	ldr r0, =injection_filepath
 	ldr r1, =injection_filepath_size
 	bl load_file_rwx
 
-	; store address of the loaded code after the end of bss
-	ldr r1, =new_code_main_ptr
-	str r0, [r1]
+	; Keep where the rust injection code is allocated in memory in the r11
+	; register. So I can figure out where the rust code crashed. Not the best
+	; solution but currently the rust code doesn't touch r11, so it works out
+	; (for now)
+	mov r11, r0
+	blx r0
 
-	pop {r0, r1, pc}
+	pop {pc}
 .endfunc
 
-@FILE_SYSTEM_SESSION  equ 0x54DD18
-@INITIALIZE_FS_SYSTEM equ 0x28b3bc
-@OPEN_FILE_DIRECTLY   equ 0x279E60
-@GET_FILE_SIZE        equ 0x2BC628
-@MALLOC               equ 0x28C108
-@READ_FILE            equ 0x2BC544
-@CLOSE_FILE           equ 0x2BC59C
+@FS_SERVICE_INIT     equ 0x28B3BC
+@FS_SERVICE_HANDLE   equ 0x54DD18
+@OPEN_FILE_DIRECTLY  equ 0x279E60
+@GET_FILE_SIZE       equ 0x2BC628
+@MALLOC              equ 0x28C108
+@READ_FILE           equ 0x2BC544
+@CLOSE_FILE          equ 0x2BC59C
 .func load_file_rwx
 	push {r1-r7, lr}
 	sub sp, 0x24
@@ -77,11 +56,11 @@ injection_filepath_size equ . - injection_filepath
 	mov r6, r0 ; file path
 	mov r7, r1 ; file path size
 
-	; sets @FILE_SYSTEM_SESSION
-	bl @INITIALIZE_FS_SYSTEM
+	; sets @FS_SERVICE_HANDLE
+	bl @FS_SERVICE_INIT
 
 	; open file
-	ldr r0, =@FILE_SYSTEM_SESSION
+	ldr r0, =@FS_SERVICE_HANDLE
 	add r1, sp, 0x20   ; pointer to output file handle
 	mov r2, 0          ; transaction         = 0
 	mov r3, 9          ; archive id          = SDMC
@@ -126,7 +105,7 @@ injection_filepath_size equ . - injection_filepath
 
 @CURRENT_PROCESS_PSEUDO_HANDLE equ 0xFFFF8001
 .func mark_memory_as_rwx
-	push {r0-r5, lr}
+	push {r0-r6, lr}
 
 	; 0x2: QueryMemory(address[r2]) -> (base_process_addr[r1], size[r2])
 	mov r2, r0
@@ -138,7 +117,7 @@ injection_filepath_size equ . - injection_filepath
 	ldr r1, =@CURRENT_PROCESS_PSEUDO_HANDLE
 	swi 0x35
 	swi 0x33
-	mov r0, r1
+	mov r6, r1
 
 	; ControlProcessMemory(
 	;     handle[r0],
@@ -148,15 +127,19 @@ injection_filepath_size equ . - injection_filepath
 	;     type[r4],
 	;     perm[r5]
 	; )
-	;
-	;   r0: from OpenProcess ; process handle
-	mov r2, 0                ; addr2 = NULL
-	pop {r1, r3}             ; {mem.base_address, mem.size}
-	ldr r4, =6               ; type = MEMOP_PROT
-	ldr r5, =7               ; perm = MEMPERM_RWX
+
+	mov r0, r6    ; process handle
+	mov r2, 0     ; addr2 = NULL
+	pop {r1, r3}  ; {mem.base_address, mem.size}
+	ldr r4, =6    ; type = MEMOP_PROT
+	ldr r5, =7    ; perm = MEMPERM_RWX
 	swi 0x70
 
-	pop {r0-r5, pc}
+	; CloseHandle(handle[r0])
+	mov r0, r6    ; process handle
+	swi 0x23
+
+	pop {r0-r6, pc}
 .endfunc
 
 .pool

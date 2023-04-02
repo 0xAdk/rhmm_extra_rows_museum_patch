@@ -10,9 +10,9 @@ OUT_DIR   ?= output
 INJECTION_PROFILE ?= debug
 
 # ips targets {{{
-IPS_OUTPUT_FILES = $(OUT_DIR)/code.ips $(OUT_DIR)/exheader.ips
+IPS_OUTPUT_FILES = $(OUT_DIR)/code.ips
 
-INPUT_FILES = $(INPUT_DIR)/code.bin $(INPUT_DIR)/exheader.bin
+INPUT_FILES = $(INPUT_DIR)/code.bin
 $(INPUT_FILES):
 	$(error [ERROR] missing one or more required files: $(INPUT_FILES))
 
