@@ -13,7 +13,6 @@ patching code.bin:
 building injection.bin:
 - the [arm gnu toolchain](https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain)
 - [rust](https://www.rust-lang.org/tools/install)
-    - `nightly` + with the `rust-src` component installed
 
 ## building and installing
 After all the requirements are fulfilled run
