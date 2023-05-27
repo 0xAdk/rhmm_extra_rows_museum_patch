@@ -2,4 +2,4 @@
 # specifically 2023-03-01 since latest causes a linking error when building
 # debug (release or release-with-debug compile fine)
 channel = "nightly-2023-03-01"
-components = [ "rust-src" ]
+components = [ "rust-src", "rust-analyzer" ]
