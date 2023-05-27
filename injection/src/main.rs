@@ -6,34 +6,33 @@ use core::{arch::asm, ffi::c_char};
 #[export_name = "_start"]
 #[link_section = ".text._start"]
 fn setup_hooks() {
-	thunk_to_rust(0x2423D8 as _, get_next_row as _);
+	thunk_to_rust(0x2423D8 as _, get_next_row as _).unwrap();
 }
 
 // takes a address to a function in code.bin and replaces it with a thunk
 // function that calls `rust_function` instead
-fn thunk_to_rust(func_addr: *const (), rust_function: *const ()) {
+fn thunk_to_rust(func_addr: *const (), rust_function: *const ()) -> Result<(), SvcResult> {
 	// overwrites the first 3 bytes of func_addr with:
 	//   ldr r12, 0f
 	//   bx  r12
 	//   0: .word {rust_function_ptr}
 	let thunk_to_rust_func = &[0xE5_9F_C0_00, 0xE1_2F_FF_1C, rust_function as _];
 
-	unsafe { patch_text(func_addr as _, thunk_to_rust_func).unwrap() }
+	unsafe { patch_text(func_addr as _, thunk_to_rust_func) }
 }
 
 unsafe fn patch_text(addr: *mut u32, new_code: &[u32]) -> Result<(), SvcResult> {
 	let text_start = 0x100000 as *const ();
 	let text_size = 0x29A000;
 
-	let process_handle_wrapper = open_current_process_handle().unwrap();
+	let process_handle_wrapper = open_current_process_handle()?;
 
 	process_memory_set_permissions(
 		process_handle_wrapper.handle,
 		text_start,
 		text_size,
 		MemoryPermission::RW,
-	)
-	.unwrap();
+	)?;
 
 	addr.copy_from_nonoverlapping(new_code.as_ptr(), new_code.len());
 
@@ -42,8 +41,7 @@ unsafe fn patch_text(addr: *mut u32, new_code: &[u32]) -> Result<(), SvcResult> 
 		text_start,
 		text_size,
 		MemoryPermission::RX,
-	)
-	.unwrap();
+	)?;
 
 	Ok(())
 }
