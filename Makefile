@@ -49,13 +49,13 @@ $(INJECTION_OUTPUT_DIR)/%/injection:
 	$(error [ERROR] invalid profile for injection "$(INJECTION_PROFILE)")
 
 $(INJECTION_OUTPUT_DIR)/debug/injection: $(INJECTION_SRC)
-	cargo -C injection build --profile dev
+	cd injection && cargo build --profile dev
 
 $(INJECTION_OUTPUT_DIR)/release/injection: $(INJECTION_SRC)
-	cargo -C injection build --profile release
+	cd injection && cargo build --profile release
 
 $(INJECTION_OUTPUT_DIR)/release-with-debug-info/injection: $(INJECTION_SRC)
-	cargo -C injection build --profile release-with-debug-info
+	cd injection && cargo build --profile release-with-debug-info
 
 # }}}
 
@@ -79,7 +79,7 @@ clean_output:
 	-rmdir $(OUT_DIR)
 
 clean_targets:
-	cargo -C injection clean
+	cd injection && cargo clean
 # }}}
 
 .PHONY: send
