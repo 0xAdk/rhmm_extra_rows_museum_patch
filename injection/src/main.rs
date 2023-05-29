@@ -1,27 +1,69 @@
 #![no_std]
 #![no_main]
+#![feature(stmt_expr_attributes)]
 
-use core::{arch::asm, ffi::c_char};
+use core::{arch::asm, ptr::addr_of};
 
 #[export_name = "_start"]
 #[link_section = ".text._start"]
 fn setup_hooks() {
-	thunk_to_rust(0x2423D8 as _, get_next_row as _).unwrap();
+	unsafe {
+		run_with_text_rw(move || {
+			#[rustfmt::skip]
+			let museum_row_pointer_addresses = [
+				0x2421E8, 0x2421E8, 0x24C480, 0x24D408,           // gRowInfo
+				0x1979E0, 0x1983FC, 0x242350, 0x2424BC, 0x24E010, // gRowInfo1
+				0x2423D4, 0x2619C0,                               // gRowInfo2
+				0x224FE8, 0x225008, 0x225024, 0x225044, 0x225068, // gRowInfo3
+			];
+
+			// each address is a pointer to one of the 4 musume row info arrays
+			// replace each one with a pointer to MY_MUSEUM_ROWS
+			for address in museum_row_pointer_addresses {
+				*(address as *mut u32) = addr_of!(MY_MUSEUM_ROWS) as _;
+			}
+
+			// see section F5.1.35 in the arm A-profile reference manual
+			const fn make_cmp_immediate_instruction(register: u32, value: u32) -> u32 {
+				// register is 4 bits, value is 12 bits
+				assert!(register < 2_u32.pow(4));
+				assert!(value < 2_u32.pow(12));
+
+				// 1110 == no condition
+				let cond = 0b1110 << 28;
+				let cmp_imm_base = 0b0000_00110_10_1 << 20;
+				let register = register << 16;
+
+				cond | cmp_imm_base | register | value
+			}
+
+			let compare_r1_instruction: u32 = // cmp r1, MUSEUM_ROW_COUNT
+				make_cmp_immediate_instruction(1, MUSEUM_ROW_COUNT as u32);
+
+			let compare_r8_instruction: u32 = // cmp r8, MUSEUM_ROW_COUNT
+				make_cmp_immediate_instruction(8, MUSEUM_ROW_COUNT as u32);
+
+			// replace conditions in loops that loop over the museum rows
+			// with the new MUSEUM_ROW_COUNT
+
+			// find_column_with_game
+			*(0x2423C4 as *mut u32) = compare_r1_instruction;
+
+			// get_next_row
+			*(0x2423DC as *mut u32) = compare_r1_instruction;
+			*(0x242400 as *mut u32) = compare_r8_instruction;
+			*(0x2424A0 as *mut u32) = compare_r8_instruction;
+
+			// find_row_with_game
+			*(0x2619B0 as *mut u32) = compare_r1_instruction;
+
+			Ok(())
+		})
+		.unwrap();
+	}
 }
 
-// takes a address to a function in code.bin and replaces it with a thunk
-// function that calls `rust_function` instead
-fn thunk_to_rust(func_addr: *const (), rust_function: *const ()) -> Result<(), SvcResult> {
-	// overwrites the first 3 bytes of func_addr with:
-	//   ldr r12, 0f
-	//   bx  r12
-	//   0: .word {rust_function_ptr}
-	let thunk_to_rust_func = &[0xE5_9F_C0_00, 0xE1_2F_FF_1C, rust_function as _];
-
-	unsafe { patch_text(func_addr as _, thunk_to_rust_func) }
-}
-
-unsafe fn patch_text(addr: *mut u32, new_code: &[u32]) -> Result<(), SvcResult> {
+unsafe fn run_with_text_rw(f: impl Fn() -> Result<(), SvcResult>) -> Result<(), SvcResult> {
 	let text_start = 0x100000 as *const ();
 	let text_size = 0x29A000;
 
@@ -31,10 +73,10 @@ unsafe fn patch_text(addr: *mut u32, new_code: &[u32]) -> Result<(), SvcResult> 
 		process_handle_wrapper.handle,
 		text_start,
 		text_size,
-		MemoryPermission::RW,
+		MemoryPermission::RWX,
 	)?;
 
-	addr.copy_from_nonoverlapping(new_code.as_ptr(), new_code.len());
+	f()?;
 
 	process_memory_set_permissions(
 		process_handle_wrapper.handle,
@@ -183,203 +225,74 @@ fn close_handle(handle: Handle) -> Result<(), SvcResult> {
 	}
 }
 
-const MUSEUM_ROW_COUNT: usize = 29;
-
-#[repr(u8)]
-enum SearchDirection {
-	Up = 0,
-	Down = 1,
-}
-
-impl TryFrom<u32> for SearchDirection {
-	type Error = ();
-
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
-		match value {
-			0 => Ok(SearchDirection::Up),
-			1 => Ok(SearchDirection::Down),
-			_ => Err(()),
-		}
-	}
-}
-
-extern "C" fn get_next_row(_this: *const (), mut current_row: usize, dir: SearchDirection) -> i32 {
-	// this shouldn't happen right?
-	if current_row > MUSEUM_ROW_COUNT {
-		return -1;
-	}
-
-	let new_row_index = loop {
-		match dir {
-			SearchDirection::Up => current_row += 1,
-			SearchDirection::Down => current_row = current_row.wrapping_sub(1),
-		}
-
-		if current_row >= MUSEUM_ROW_COUNT {
-			break None;
-		}
-
-		let row = unsafe { &(*MUSEUM_ROWS)[current_row] };
-		if row_is_visible(row) {
-			break Some(current_row);
-		}
-	};
-
-	let current_save_slot = unsafe { (**SAVE_MANAGER).current_save_slot };
-
-	match new_row_index {
-		Some(row) => row as i32,
-		None => match dir {
-			SearchDirection::Up => 0,
-			SearchDirection::Down => (0..MUSEUM_ROW_COUNT)
-				.rev()
-				.find(|&index| {
-					let row = unsafe { &(*MUSEUM_ROWS)[index] };
-					row_is_visible(row)
-				})
-				.unwrap_or(0) as i32,
-		},
-	}
-}
-
 #[repr(C)]
 struct MuseumRow {
 	column_count: usize,
 	game_indices: [u16; 5],
-	undefined: [u8; 2],
-	title_id: *const c_char,
+	pad: [u8; 2],
+	title_id: u32,
 	high_index: u32,
 	low_index: u32,
 }
 
-const MUSEUM_ROWS: *const [MuseumRow; MUSEUM_ROW_COUNT] = 0x4C8EA8 as _;
+impl MuseumRow {
+	const fn new(game_indices: [u16; 5], title_id: u32, high_index: u32, low_index: u32) -> Self {
+		let column_count = match () {
+			_ if game_indices[1] == 0x101 => 1,
+			_ if game_indices[3] == 0x101 => 3,
+			_ if game_indices[4] == 0x101 => 4,
+			_ => 5,
+		};
 
-macro_rules! const_fn_ptr_at_addr {
-	(const $name:ident at $addr:literal: $fptr_type:ty) => {
-		const $name: *const $fptr_type = &$addr as *const _ as _;
-	};
-}
-
-fn get_game_id(game_index: u16) -> u8 {
-	const_fn_ptr_at_addr!(const FN_PTR at 0x261A10: extern "C" fn(u16) -> u8);
-	unsafe { (*FN_PTR)(game_index) }
-}
-
-#[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-enum GameRank {
-	Unknown = 0, // game is hidden in the campaign or not bought
-
-	// the only difference is a shop game is shown in the museum
-	// before it's been finished while a story game shows up as ???
-	UnfinishedStory = 1,
-	UnfinishedShop = 2,
-
-	NotGood = 3, //       high score < 60
-	Ok = 4,      // 60 <= high score < 80
-	High = 5,    // 80 <= high_score
-	Perfect = 6, // got a perfect in the perfect challenge
-}
-
-impl TryFrom<u8> for GameRank {
-	type Error = ();
-
-	fn try_from(value: u8) -> Result<Self, Self::Error> {
-		Ok(match value {
-			0 => GameRank::Unknown,
-			1 => GameRank::UnfinishedStory,
-			2 => GameRank::UnfinishedShop,
-			3 => GameRank::NotGood,
-			4 => GameRank::Ok,
-			5 => GameRank::High,
-			6 => GameRank::Perfect,
-			_ => return Err(()),
-		})
+		Self {
+			column_count,
+			game_indices,
+			pad: [0, 0],
+			title_id,
+			high_index,
+			low_index,
+		}
 	}
 }
 
-#[repr(C)]
-struct SaveSlot {
-	fill_0: [u8; 0x74],
-	game_ranks: [GameRank; 104],
-	fill_1: [u8; 0x10A8],
-	coin_count: u16,
-	flow_ball_count: u16,
-	fill_2: [u8; 0x4C0],
-}
+const MUSEUM_ROW_COUNT: usize = 32;
 
-#[repr(C)]
-struct SaveManager {
-	fill_0: [u8; 0x1C3F],
-	save_slots: [SaveSlot; 4],
-	current_save_slot: usize,
-	fill_1: [u8; 0x4],
-}
+#[rustfmt::skip]
+static MY_MUSEUM_ROWS: [MuseumRow; MUSEUM_ROW_COUNT] = [
+	/* E2 */ MuseumRow::new([0x049, 0x04a, 0x02c, 0x101, 0x101], 0x50201b, 0, 0),
+	/* E1 */ MuseumRow::new([0x069, 0x068, 0x06b, 0x06a, 0x101], 0x50201b, 0, 0),
+	/* E0 */ MuseumRow::new([0x023, 0x05b, 0x006, 0x00e, 0x05d], 0x50201b, 0, 0),
 
-const SAVE_MANAGER: *const *const SaveManager = 0x54d350 as _;
-
-fn get_game_rank(game_id: u8) -> GameRank {
-	let save_manager = unsafe { &**SAVE_MANAGER };
-	let current_save_slot = &save_manager.save_slots[save_manager.current_save_slot];
-	current_save_slot.game_ranks[game_id as usize]
-}
-
-fn find_row_with_index(game_index: u16) -> u8 {
-	const_fn_ptr_at_addr! {
-		const FN_PTR at 0x261964: extern "C" fn(
-			game_index: u16,
-		) -> u8
-	};
-
-	unsafe { (*FN_PTR)(game_index) }
-}
-
-fn get_gate_state(high_index: u32, low_index: u32) -> u8 {
-	const_fn_ptr_at_addr! {
-		const FN_PTR at 0x261914: extern "C" fn(
-			save_manager: *const SaveManager,
-			high_index: u32,
-			low_index: u32,
-			save_slot: i32,
-		) -> u8
-	};
-
-	unsafe { (*FN_PTR)(*SAVE_MANAGER, high_index, low_index, -1) }
-}
-
-fn row_is_visible(row: &MuseumRow) -> bool {
-	// I don't think this is possible but the decompiled code does a similar
-	// check, so might as well
-	if row.column_count == 0 {
-		return false;
-	}
-
-	row.game_indices[..row.column_count]
-		.iter()
-		.any(|&game_index| game_is_visible(game_index))
-}
-
-/// checks if a game is visible in the museum.
-///
-/// this is unrelated to the main campaign
-// since a game is only visible (i.e. not show as ???) in the museum after
-// you've completed it at least once
-fn game_is_visible(game_index: u16) -> bool {
-	let game_is_gate = game_index >= 0x68;
-
-	if game_is_gate {
-		let row_index = find_row_with_index(game_index) as usize;
-		let row = unsafe { &(*MUSEUM_ROWS)[row_index] };
-
-		let state = get_gate_state(row.high_index, row.low_index);
-
-		// TODO: figure out what the values of the gate state enum mean
-		state > 4
-	} else {
-		let game_id = get_game_id(game_index);
-		get_game_rank(game_id) >= GameRank::UnfinishedShop
-	}
-}
+	/* 0  */ MuseumRow::new([0x059, 0x005, 0x007, 0x00d, 0x101], 0x50215a, 0, 0),
+	/* 1  */ MuseumRow::new([0x002, 0x003, 0x00a, 0x00b, 0x101], 0x50217e, 0, 1),
+	/* 2  */ MuseumRow::new([0x069, 0x101, 0x101, 0x101, 0x101], 0x502141, 0, 2),
+	/* 3  */ MuseumRow::new([0x000, 0x006, 0x008, 0x00c, 0x101], 0x5021a2, 0, 3),
+	/* 4  */ MuseumRow::new([0x017, 0x01d, 0x02d, 0x044, 0x101], 0x5021bb, 0, 4),
+	/* 5  */ MuseumRow::new([0x068, 0x101, 0x101, 0x101, 0x101], 0x502165, 0, 5),
+	/* 6  */ MuseumRow::new([0x001, 0x004, 0x009, 0x00e, 0x101], 0x5021c6, 0, 6),
+	/* 7  */ MuseumRow::new([0x019, 0x01f, 0x02e, 0x045, 0x101], 0x5021d1, 0, 7),
+	/* 8  */ MuseumRow::new([0x06b, 0x101, 0x101, 0x101, 0x101], 0x502189, 0, 8),
+	/* 9  */ MuseumRow::new([0x00f, 0x025, 0x034, 0x04a, 0x05e], 0x502033, 0, 8),
+	/* 10 */ MuseumRow::new([0x05a, 0x027, 0x02c, 0x049, 0x060], 0x501ff3, 0, 0),
+	/* 11 */ MuseumRow::new([0x012, 0x022, 0x038, 0x046, 0x061], 0x501ffb, 0, 1),
+	/* 12 */ MuseumRow::new([0x010, 0x028, 0x032, 0x047, 0x062], 0x502003, 0, 2),
+	/* 13 */ MuseumRow::new([0x018, 0x024, 0x037, 0x043, 0x063], 0x50200b, 0, 3),
+	/* 14 */ MuseumRow::new([0x011, 0x026, 0x035, 0x04d, 0x064], 0x502013, 0, 4),
+	/* 15 */ MuseumRow::new([0x01b, 0x023, 0x036, 0x04b, 0x065], 0x50201b, 0, 5),
+	/* 16 */ MuseumRow::new([0x01c, 0x021, 0x03c, 0x048, 0x101], 0x50214f, 1, 0),
+	/* 17 */ MuseumRow::new([0x014, 0x02a, 0x03f, 0x042, 0x101], 0x502173, 1, 1),
+	/* 18 */ MuseumRow::new([0x01a, 0x01e, 0x02f, 0x04c, 0x101], 0x502197, 1, 2),
+	/* 19 */ MuseumRow::new([0x06a, 0x101, 0x101, 0x101, 0x101], 0x5021ad, 1, 3),
+	/* 20 */ MuseumRow::new([0x04e, 0x052, 0x056, 0x057, 0x066], 0x502023, 0, 6),
+	/* 21 */ MuseumRow::new([0x050, 0x051, 0x054, 0x058, 0x067], 0x50202b, 0, 7),
+	/* 22 */ MuseumRow::new([0x04f, 0x053, 0x055, 0x05d, 0x05f], 0x50203c, 0, 9),
+	/* 23 */ MuseumRow::new([0x013, 0x015, 0x016, 0x101, 0x101], 0x50d291, 0, 0),
+	/* 24 */ MuseumRow::new([0x020, 0x029, 0x05b, 0x101, 0x101], 0x50d29b, 0, 0),
+	/* 25 */ MuseumRow::new([0x02b, 0x030, 0x031, 0x101, 0x101], 0x50d265, 0, 0),
+	/* 26 */ MuseumRow::new([0x033, 0x039, 0x03a, 0x101, 0x101], 0x50d270, 0, 0),
+	/* 27 */ MuseumRow::new([0x03b, 0x03d, 0x03e, 0x101, 0x101], 0x50d27b, 0, 0),
+	/* 28 */ MuseumRow::new([0x040, 0x041, 0x05c, 0x101, 0x101], 0x50d286, 0, 0),
+];
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
