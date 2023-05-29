@@ -1,8 +1,9 @@
-# Looped museum patch
+# extra rows museum patch
 
-A patch for rhmm that loops the museum scene vertically.
+A patch for rhmm that allows for adding extra rows to the museum scene
 
-This was made as an exercise in generating ips patches for Luma3DS's game patching feature, and after for setting up code to inject compiled rust code.
+currently requires updating the `MY_MUSEUM_ROWS` and `MY_MUSEUM_ROW_COLORS`
+arrays in `injection/src/main.rs` and recompiling
 
 ## requirements
 patching code.bin:
