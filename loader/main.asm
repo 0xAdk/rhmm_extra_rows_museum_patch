@@ -13,11 +13,12 @@
 .area @free_space_end - .
 
 .func load_patch_detour
+	blx 0x10097C
+
 	push {r0-r12}
 	bl load_patch
 	pop {r0-r12}
 
-	blx 0x10097C
 	b @patch_loader_injection_loc + 4
 .endfunc
 
